@@ -1,0 +1,18 @@
+# Nextflow working directories and logs
+work/
+.nextflow/
+.nextflow.log*
+
+# Results and interim output
+results/
+
+# VS Code settings
+.vscode/
+
+# Local files
+*.local
+*.tmp
+
+# Ignore operating system files
+.DS_Store
+Thumbs.db
