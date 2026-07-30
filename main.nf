@@ -4,12 +4,12 @@ nextflow.enable.dsl=2
  * 1. Quality Control
  */
 process FASTQC {
-    tag "QC on $reads"
+    tag "QC on $sample"
     publishDir "${params.outdir}/qc", mode: 'copy'
     container 'biocontainers/fastqc:v0.11.9_cv8'
 
     input:
-    path reads
+    tuple val(sample), path(reads)
 
     output:
     path "*_fastqc.html"
@@ -17,7 +17,7 @@ process FASTQC {
 
     script:
     """
-    fastqc $reads
+    fastqc ${reads.join(' ')}
     """
 }
 
@@ -62,7 +62,7 @@ process BWA_INDEX {
  * This outputs a SAM file (text)
  */
 process BWA_ALIGN {
-    tag "Aligning $reads"
+    tag "Aligning $sample"
     container 'biocontainers/bwa:v0.7.17_cv1'
 
     input:
@@ -71,11 +71,11 @@ process BWA_ALIGN {
     tuple val(sample), path(reads)
 
     output:
-    tuple val(sample), path("aligned_reads.sam")
+    tuple val(sample), path("${sample}_aligned.sam")
 
     script:
     """
-    bwa mem -R "@RG\\tID:${sample}\\tSM:${sample}\\tPL:ILLUMINA" $genome ${reads.join(' ')} > aligned_reads.sam
+    bwa mem -R "@RG\\tID:${sample}\\tSM:${sample}\\tPL:ILLUMINA" $genome ${reads.join(' ')} > ${sample}_aligned.sam
     """
 }
 
@@ -84,7 +84,7 @@ process BWA_ALIGN {
  * This outputs a BAM file (binary)
  */
 process SAMTOOLS_CONVERT {
-    tag "Converting to BAM"
+    tag "Converting $sample to BAM"
     publishDir "${params.outdir}/alignment", mode: 'copy'
     container 'quay.io/biocontainers/samtools:1.13--h8c37831_0'
 
@@ -92,11 +92,11 @@ process SAMTOOLS_CONVERT {
     tuple val(sample), path(sam)
 
     output:
-    tuple val(sample), path("aligned_reads.bam")
+    tuple val(sample), path("${sample}_aligned.bam")
 
     script:
     """
-    samtools view -bS $sam > aligned_reads.bam
+    samtools view -bS $sam > ${sample}_aligned.bam
     """
 }
 
@@ -104,7 +104,7 @@ process SAMTOOLS_CONVERT {
  * 4. Coordinate Sorting
  */
 process SAMTOOLS_SORT {
-    tag "Sorting BAM"
+    tag "Sorting $sample BAM"
     publishDir "${params.outdir}/alignment", mode: 'copy'
     container 'quay.io/biocontainers/samtools:1.13--h8c37831_0'
 
@@ -112,12 +112,12 @@ process SAMTOOLS_SORT {
     tuple val(sample), path(bam)
 
     output:
-    tuple val(sample), path("sorted_reads.bam"), path("sorted_reads.bam.bai")
+    tuple val(sample), path("${sample}_sorted.bam"), path("${sample}_sorted.bam.bai")
 
     script:
     """
-    samtools sort $bam -o sorted_reads.bam
-    samtools index sorted_reads.bam
+    samtools sort $bam -o ${sample}_sorted.bam
+    samtools index ${sample}_sorted.bam
     """
 }
 
@@ -125,7 +125,7 @@ process SAMTOOLS_SORT {
  * 5. Variant Calling (The Final Discovery)
  */
 process HAPLOTYPE_CALLER {
-    tag "Calling Variants"
+    tag "Calling Variants on $sample"
     publishDir "${params.outdir}/variants", mode: 'copy'
     container 'broadinstitute/gatk:4.2.4.1'
 
@@ -136,7 +136,7 @@ process HAPLOTYPE_CALLER {
     tuple val(sample), path(bam), path(bai)
 
     output:
-    path "raw_variants_${sample}.vcf"
+    tuple val(sample), path("raw_variants_${sample}.vcf")
 
     script:
     """
@@ -181,18 +181,18 @@ EOF
  * 6. Annotation (What does the mutation DO?)
  */
 process ANNOTATE_VARIANTS {
-    tag "Annotating $vcf"
+    tag "Annotating $sample"
     publishDir "${params.outdir}/variants", mode: 'copy'
     container 'romudock/snpeff:latest'
     containerOptions '--entrypoint ""'
     shell '/bin/sh -ue'
 
     input:
-    path vcf
+    tuple val(sample), path(vcf)
 
     output:
-    path "annotated_variants.vcf"
-    path "snpEff_summary.txt"
+    path "annotated_variants_${sample}.vcf"
+    path "snpEff_summary_${sample}.txt"
 
     script:
     """
@@ -200,46 +200,37 @@ process ANNOTATE_VARIANTS {
     # Use the SnpEff database configured in nextflow.config (params.snpeff_db).
     # If the database is not available locally and the container cannot reach the network,
     # fall back to copying the input VCF so the workflow still completes.
-    if snpEff -nodownload ann ${params.snpeff_db} $vcf > annotated_variants.vcf 2> snpEff_summary.txt; then
+    if snpEff -nodownload ann ${params.snpeff_db} $vcf > annotated_variants_${sample}.vcf 2> snpEff_summary_${sample}.txt; then
         :
     else
-        cp $vcf annotated_variants.vcf
-        echo 'SnpEff annotation skipped: local database unavailable and download failed.' > snpEff_summary.txt
+        cp $vcf annotated_variants_${sample}.vcf
+        echo 'SnpEff annotation skipped: local database unavailable and download failed.' > snpEff_summary_${sample}.txt
     fi
     """
 }
 
 workflow {
-    // 1. Setup the genome file channel
-    genome_file = channel.fromPath(params.get('genome', 'data/ref/genome.fasta'))
+    // 1. Setup the genome file channel and read pairs
+    genome_file = channel.fromPath(params.genome)
+    read_pairs  = channel.fromFilePairs(params.reads, size: 2)
 
-    // 2. Setup the reads channel as paired-end input files
-    read_pairs = channel.fromFilePairs(params.get('reads', 'data/reads/*_{1,2}.fastq.gz'), size: 2)
+    // Reference prep and index
+    ref_index  = GATK_PREP(genome_file)
+    fasta_fai  = ref_index.map { it[0] }
+    fasta_dict = ref_index.map { it[1] }
+    bwa_index  = BWA_INDEX(genome_file)
 
-    // 3. Prep the reference using the defined process
-    ref_index = GATK_PREP(genome_file)
-    fasta_fai = ref_index.map { entry -> entry[0] }
-    fasta_dict = ref_index.map { entry -> entry[1] }
-
-    // 4. Create BWA index and align reads
-    aligned_sam = BWA_ALIGN(genome_file, BWA_INDEX(genome_file), read_pairs)
-
-    // 5. Convert SAM to BAM, then sort and index
-    bam_output = SAMTOOLS_CONVERT(aligned_sam)
-    sorted_bam = SAMTOOLS_SORT(bam_output)
-
-    // 6. Final Variant Calling
-    vcf_output = HAPLOTYPE_CALLER(genome_file, fasta_fai, fasta_dict, sorted_bam)
-
-    // 7. NEW: Annotation
-    // Capture the annotation process outputs directly (annotated VCF and summary)
+    // Per-sample alignment -> BAM -> sorted BAM -> variant calling -> annotation
+    aligned_sam    = BWA_ALIGN(genome_file, bwa_index, read_pairs)
+    bam_output     = SAMTOOLS_CONVERT(aligned_sam)
+    sorted_bam     = SAMTOOLS_SORT(bam_output)
+    vcf_output     = HAPLOTYPE_CALLER(genome_file, fasta_fai, fasta_dict, sorted_bam)
     (annotated_vcf, snpeff_summary) = ANNOTATE_VARIANTS(vcf_output)
 
-    // 8. Run FASTQC and MultiQC
-    read_files = read_pairs.map { pair -> pair[1] }.flatten()
-    (fastqc_html, fastqc_zip) = FASTQC(read_files)
-    
-    // Include FastQC reports plus the annotation summary for MultiQC.
-    report_files = fastqc_html.mix(fastqc_zip).mix(snpeff_summary).collect()
+    // Run FastQC per sample and collect reports
+    (fastqc_html, fastqc_zip) = FASTQC(read_pairs)
+
+    // Aggregate FastQC zips and SnpEff summaries for MultiQC
+    report_files = fastqc_zip.mix(snpeff_summary).collect()
     MULTIQC(report_files)
 }
