@@ -5,7 +5,7 @@ nextflow.enable.dsl=2
  */
 process FASTQC {
     tag "QC on $reads"
-    publishDir 'results/qc', mode: 'copy'
+    publishDir "${params.outdir}/qc", mode: 'copy'
     container 'biocontainers/fastqc:v0.11.9_cv8'
 
     input:
@@ -85,7 +85,7 @@ process BWA_ALIGN {
  */
 process SAMTOOLS_CONVERT {
     tag "Converting to BAM"
-    publishDir 'results/alignment', mode: 'copy'
+    publishDir "${params.outdir}/alignment", mode: 'copy'
     container 'quay.io/biocontainers/samtools:1.13--h8c37831_0'
 
     input:
@@ -105,7 +105,7 @@ process SAMTOOLS_CONVERT {
  */
 process SAMTOOLS_SORT {
     tag "Sorting BAM"
-    publishDir 'results/alignment', mode: 'copy'
+    publishDir "${params.outdir}/alignment", mode: 'copy'
     container 'quay.io/biocontainers/samtools:1.13--h8c37831_0'
 
     input:
@@ -126,7 +126,7 @@ process SAMTOOLS_SORT {
  */
 process HAPLOTYPE_CALLER {
     tag "Calling Variants"
-    publishDir 'results/variants', mode: 'copy'
+    publishDir "${params.outdir}/variants", mode: 'copy'
     container 'broadinstitute/gatk:4.2.4.1'
 
     input:
@@ -149,7 +149,7 @@ process HAPLOTYPE_CALLER {
 }
 
 process MULTIQC {
-    publishDir 'results/qc', mode: 'copy'
+    publishDir "${params.outdir}/qc", mode: 'copy'
     container 'multiqc/multiqc:latest'
 
     input:
@@ -182,7 +182,7 @@ EOF
  */
 process ANNOTATE_VARIANTS {
     tag "Annotating $vcf"
-    publishDir 'results/variants', mode: 'copy'
+    publishDir "${params.outdir}/variants", mode: 'copy'
     container 'romudock/snpeff:latest'
     containerOptions '--entrypoint ""'
     shell '/bin/sh -ue'
@@ -197,10 +197,10 @@ process ANNOTATE_VARIANTS {
     script:
     """
     set -e
-    # 'NC_045512.2' is the SnpEff database name for the SARS-CoV-2 reference.
+    # Use the SnpEff database configured in nextflow.config (params.snpeff_db).
     # If the database is not available locally and the container cannot reach the network,
     # fall back to copying the input VCF so the workflow still completes.
-    if snpEff -nodownload ann NC_045512.2 $vcf > annotated_variants.vcf 2> snpEff_summary.txt; then
+    if snpEff -nodownload ann ${params.snpeff_db} $vcf > annotated_variants.vcf 2> snpEff_summary.txt; then
         :
     else
         cp $vcf annotated_variants.vcf
