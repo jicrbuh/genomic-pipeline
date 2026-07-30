@@ -218,8 +218,8 @@ workflow {
 
     // 3. Prep the reference using the defined process
     ref_index = GATK_PREP(genome_file)
-    fasta_fai = ref_index.map { it[0] }
-    fasta_dict = ref_index.map { it[1] }
+    fasta_fai = ref_index.map { entry -> entry[0] }
+    fasta_dict = ref_index.map { entry -> entry[1] }
 
     // 4. Create BWA index and align reads
     aligned_sam = BWA_ALIGN(genome_file, BWA_INDEX(genome_file), read_pairs)
@@ -232,10 +232,11 @@ workflow {
     vcf_output = HAPLOTYPE_CALLER(genome_file, fasta_fai, fasta_dict, sorted_bam)
 
     // 7. NEW: Annotation
+    // Capture the annotation process outputs directly (annotated VCF and summary)
     (annotated_vcf, snpeff_summary) = ANNOTATE_VARIANTS(vcf_output)
 
     // 8. Run FASTQC and MultiQC
-    read_files = read_pairs.map { it[1] }.flatten()
+    read_files = read_pairs.map { pair -> pair[1] }.flatten()
     (fastqc_html, fastqc_zip) = FASTQC(read_files)
     
     // Include FastQC reports plus the annotation summary for MultiQC.
